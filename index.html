@@ -536,7 +536,8 @@ pre.fmt { margin: 0; padding: 10px; border-radius: 9px; background: var(--panel-
 .walk-joy { position: absolute; left: 22px; bottom: calc(env(safe-area-inset-bottom, 0px) + 26px); width: 132px; height: 132px; border-radius: 50%; background: rgba(10,14,16,0.4); border: 2px solid rgba(255,255,255,0.22); touch-action: none; display: grid; place-items: center; }
 .walk-joy i { width: 56px; height: 56px; border-radius: 50%; background: rgba(241,236,223,0.75); box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
 .walk-action { position: absolute; left: 50%; transform: translateX(-50%); bottom: calc(env(safe-area-inset-bottom, 0px) + 180px); max-width: 80%; padding: 12px 18px; border-radius: 14px; border: 0; background: var(--accent); color: #1a1408; font: inherit; font-size: 15px; font-weight: 700; box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
-.walk-menu { position: absolute; right: 12px; top: calc(env(safe-area-inset-top, 0px) + 64px); width: min(320px, calc(100% - 24px)); padding: 12px; border-radius: 14px; background: rgba(16,21,23,0.94); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; color: var(--ink); }
+.walk-menu { position: absolute; right: 12px; top: calc(env(safe-area-inset-top, 0px) + 64px); width: min(320px, calc(100% - 24px)); padding: 12px; border-radius: 14px; background: rgba(16,21,23,0.94); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; color: var(--ink); max-height: calc(100% - env(safe-area-inset-top, 0px) - 76px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; z-index: 6; }
+.walk-menu > * { flex-shrink: 0; }
 .walk-labels { position: absolute; inset: 0; pointer-events: none; }
 .walk-label { position: absolute; left: 0; top: 0; padding: 2px 7px; border-radius: 6px; background: rgba(10,14,16,0.72); color: #f1ecdf; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .walk-label.danger { background: rgba(140,30,24,0.8); }
@@ -4945,6 +4946,8 @@ const App = {
     if (ui && this.mode === 'forest' && Forests.maskCanvas) { c.imageSmoothingEnabled = false; c.drawImage(Forests.maskCanvas, -0.5, -0.5); c.imageSmoothingEnabled = true; }
     // objects
     const pad = 30 / cm;
+    // one transform per object instead of save/translate/rotate/scale/restore (that was the slowest part of panning)
+    const BM = c.getTransform(), BA = BM.a, BB = BM.b, BC = BM.c, BD = BM.d, BE = BM.e, BF = BM.f;
     for (const o of P.objects) {
       if (o.x < vb.x0 - pad || o.x > vb.x1 + pad || o.y < vb.y0 - pad || o.y > vb.y1 + pad) continue;
       const e = catalogGet(o.type);
@@ -4952,15 +4955,25 @@ const App = {
       const s = o.scale || 1;
       const img = SpriteCache.get(o.type, ppm * s);
       const wc = (e.w + SPRITE_PAD * 2) / cm, hc = (e.h + SPRITE_PAD * 2) / cm;
-      c.save();
-      c.translate(o.x, o.y); c.rotate(((o.rot || 0) * Math.PI) / 180); c.scale(s, s);
-      if (img && wc * pxPerCell > 2.5) c.drawImage(img, -wc / 2, -hc / 2, wc, hc);
+      const selO = ui && this.sel && this.sel.kind === 'object' && this.sel.id === o.id;
+      if (!(img && wc * pxPerCell > 2.5) && !selO) { // too small to see the picture: a plain dot, no transform
+        const fs = e.cat === 'trees' ? '#3f6b45' : '#a8492f'; if (c.fillStyle !== fs) c.fillStyle = fs;
+        const ww = Math.max(e.w * s / cm, 1 / pxPerCell), hh = Math.max(e.h * s / cm, 1 / pxPerCell); c.fillRect(o.x - ww / 2, o.y - hh / 2, ww, hh); continue;
+      }
+      const ang = ((o.rot || 0) * Math.PI) / 180, co = Math.cos(ang) * s, si = Math.sin(ang) * s;
+      c.setTransform(BA * co + BC * si, BB * co + BD * si, BC * co - BA * si, BD * co - BB * si, BA * o.x + BC * o.y + BE, BB * o.x + BD * o.y + BF);
+      if (img && wc * pxPerCell > 2.5) {
+        // ruins: grey and dark, the inside showing where the roof was
+        if (o.ruin) { c.filter = 'grayscale(' + Math.round(o.ruin * 70) + '%) brightness(' + Math.round(100 - o.ruin * 35) + '%)'; }
+        c.drawImage(img, -wc / 2, -hc / 2, wc, hc);
+        if (o.ruin) { c.filter = 'none'; if (o.ruin > 0.45 && !LEN_TYPES.has(o.type)) { c.fillStyle = 'rgba(48,40,30,' + (0.35 + o.ruin * 0.3).toFixed(2) + ')'; c.fillRect(-e.w / cm * 0.34, -e.h / cm * 0.34, e.w / cm * 0.68, e.h / cm * 0.68); } }
+      }
       else { c.fillStyle = e.cat === 'trees' ? '#3f6b45' : '#a8492f'; c.fillRect(-e.w / cm / 2, -e.h / cm / 2, Math.max(e.w / cm, 1 / pxPerCell), Math.max(e.h / cm, 1 / pxPerCell)); }
       if (ui && this.sel && this.sel.kind === 'object' && this.sel.id === o.id) {
         c.strokeStyle = '#f2d27a'; c.lineWidth = 2 / pxPerCell / s * 1.4; c.setLineDash([4 / pxPerCell * 2, 3 / pxPerCell * 2]);
         c.strokeRect(-e.w / cm / 2 - 0.5, -e.h / cm / 2 - 0.5, e.w / cm + 1, e.h / cm + 1); c.setLineDash([]);
       }
-      c.restore();
+      c.setTransform(BM);
     }
   },
 
@@ -5510,7 +5523,7 @@ const App = {
           if (ts.vertexMoved) { this.afterShapeEdit(); this.markDirty(); }
           else Undo.cancel(ts.snap);
         } else if (ts.drag) {
-          if (ts.dragSnap) { if (ts.drag.kind === 'object') { const o = this.findSel(); if (o) levelAfter(levelUnder(o)); } this.markDirty(); UI.renderPanel(); }
+          if (ts.dragSnap) { if (ts.drag.kind === 'object') { const o = this.findSel(); if (o) { levelAfter(levelUnder(o)); if (o.village) o.pinned = true; } } this.markDirty(); UI.renderPanel(); }
         } else if (!ts.moved) {
           this.select(ts.pendingHit);
         } else this.saveViewSoon();
@@ -6351,6 +6364,7 @@ Panels.objects = function () {
     out.push(field('Назва (необов\'язково)', textInput(sel.name || '', (v) => { touch(); sel.name = v; App.markDirty(); }, e ? e.name : '')));
     out.push(slider('Поворот', sel.rot || 0, 0, 359, 1, (v) => { touch(); sel.rot = v; App.requestDraw(); App.markDirty(); }, (v) => v + '°'));
     out.push(slider('Розмір', sel.scale || 1, 0.3, 3, 0.05, (v) => { touch(); sel.scale = v; App.requestDraw(); App.markDirty(); }, (v) => '×' + v.toFixed(2)));
+    if (sel.village) out.push(toggle('Закріпити в селі (не перебудовувати)', !!sel.pinned, (v) => { Undo.push('data'); if (v) sel.pinned = true; else delete sel.pinned; App.markDirty(); }), hint('Закріплена будівля лишається на місці, коли село перебудовується, — нові двори обходять її. Пересунута рукою будівля закріплюється сама.'));
     out.push(toggle('Завжди детально в 3D (без LOD)', !!sel.noLod, (v) => { Undo.push('data'); if (v) sel.noLod = true; else delete sel.noLod; App.markDirty(); }), hint('Споруда не спрощується в коробку вдалині — видно здалеку повністю. Для веж, замків, орієнтирів; багато таких об\'єктів сповільнить 3D.'));
     out.push(row(
       btn('Дублювати', () => { Undo.push('data'); const c = Object.assign({}, sel, { id: uid('o'), x: sel.x + 4, y: sel.y + 4, zone: null }); P.objects.push(c); App.select({ kind: 'object', id: c.id }); App.markDirty(); }, 'ghost'),
@@ -12341,7 +12355,7 @@ const Walk = {
   },
   toggleMenu() {
     const m = this.menu; m.hidden = !m.hidden; if (m.hidden) return;
-    m.innerHTML = '';
+    m.innerHTML = ''; if (!m._stop) { m._stop = 1; for (const ev of ['wheel', 'pointerdown', 'touchstart', 'touchmove']) m.addEventListener(ev, (e) => e.stopPropagation(), { passive: true }); }
     const fmtH = (v) => String(Math.floor(v)).padStart(2, '0') + ':' + String(Math.round((v % 1) * 60)).padStart(2, '0');
     const restart = () => { const w = Object.assign({}, this.where), p = this.fly ? [this.fc.x, this.fc.z] : this.pos, fly = this.fly, inside = this.mode === 'interior'; this.close(); if (!inside) this.start({ mode: 'world', x: p[0] / cellMeters(App.P), y: p[1] / cellMeters(App.P), fly }); else this.start(w); };
     m.append(
@@ -12354,6 +12368,7 @@ const Walk = {
       this.mode === 'world' ? btn('Облетіти світ', () => { m.hidden = true; if (!this.fly) this.startFly(); this.orbit = { a: Math.atan2(this.fc.z - App.P.worldSize / 2, this.fc.x - App.P.worldSize / 2) }; }, 'ghost small') : null,
       !this.fly ? btn('Скинути лічильник', () => { this.st.dist = 0; }, 'ghost small') : null,
       btn('Закрити меню', () => { m.hidden = true; }, 'ghost small'));
+    for (const n of [...m.childNodes]) if (n.nodeType === 3 && n.textContent === 'null') n.remove();
   },
   placeHere() {
     const e = catalogGet(App.S.objType); if (!e) { UI.toast('Спершу оберіть об\'єкт у вкладці «Об\'єкти»'); return; }
@@ -13940,7 +13955,10 @@ function lifeExport(P) {
 // The token lives only on this device (localStorage), never in the project or in exports.
 // ============================================================================================
 const GH_API = 'https://api.github.com';
-const GH_CHUNK = 64;
+// terrain is stored in square pieces; big worlds use bigger pieces so GitHub gets far fewer files
+// (a 2049 world: 81 files instead of 1089 — GitHub limits how many files may be created per minute)
+let GH_CHUNK = 64;
+const ghWantChunk = (P) => (P.res > 1100 ? 256 : 64);
 const GH_LIST_NAMES = { forests: 'Ліси', rivers: 'Річки', lakes: 'Озера', roads: 'Дороги', objects: 'Об\'єкти', zones: 'Зони', regions: 'Регіони', npcs: 'NPC', factions: 'Фракції', quests: 'Квести', cutscenes: 'Катсцени', customSprites: 'Свої спрайти', stats: 'Характеристики', resists: 'Резисти', items: 'Предмети', skillTrees: 'Навички', units: 'Юніти', merchants: 'Торговці', itemCats: 'Категорії предметів', merchantKinds: 'Види торговців', skillCats: 'Категорії навичок', interiors: 'Споруди', effects: 'Ефекти', lore: 'Лор' };
 
 const GitCfg = {
@@ -13993,6 +14011,15 @@ async function ghFetch(path, opt = {}) {
     if (!r.ok) {
       let msg = ''; try { msg = (await r.json()).message || ''; } catch (e) {}
       if (r.status === 401) throw new Error('GitHub не прийняв токен (401). Перевірте, чи він скопійований повністю і чи не прострочений.');
+      if ((r.status === 403 || r.status === 429) && /rate limit|abuse/i.test(msg) && (opt.tries || 0) < 5) {
+        const ra = +r.headers.get('retry-after'), reset = +r.headers.get('x-ratelimit-reset'), rem = r.headers.get('x-ratelimit-remaining');
+        let wait = ra > 0 ? ra : rem === '0' && reset ? Math.max(5, reset - Date.now() / 1000) : 60 * Math.pow(1.5, opt.tries || 0);
+        wait = Math.min(Math.ceil(wait), 900);
+        for (let t = wait; t > 0; t--) { if (GitSync.cancelled) throw new Error('Скасовано. Можна натиснути ще раз — уже надіслане не загубиться.'); GitSync.step('GitHub просить зачекати (обмеження частоти запитів). Продовжу сам через ' + t + ' с…'); await new Promise((res) => setTimeout(res, 1000)); }
+        clearTimeout(timer); GitSync.live.delete(ac);
+        return ghFetch(path, Object.assign({}, opt, { tries: (opt.tries || 0) + 1 }));
+      }
+      if ((r.status === 403 || r.status === 429) && /rate limit|abuse/i.test(msg)) throw new Error('GitHub тимчасово обмежив кількість запитів. Зачекайте кілька хвилин і натисніть ще раз — уже надіслане не загубиться.');
       if (r.status === 403) throw new Error('Токену бракує дозволу (403). Потрібен доступ «Contents: Read and write» до цього репозиторію. ' + msg);
       if (r.status === 404) throw new Error('Не знайдено (404): немає такого репозиторію або токен не має до нього доступу.');
       throw new Error('GitHub: ' + r.status + ' ' + msg);
@@ -14089,8 +14116,10 @@ const GitSync = {
     const R = await this.remoteTree(repo, branch, dir);
     if (!R.head) return { nothing: true, empty: true };
     if (R.head === g.commit) return { nothing: true };
-    const files = ghProjectFiles(P), local = this.localShas(files), base = g.commit ? g.shas || {} : {};
-    const fresh = !g.commit; // first time: GitHub is the truth, local copy kept below as a backup
+    const fresh = !g.commit, base0 = g.commit ? g.shas || {} : {};
+    GH_CHUNK = g.chunk || 64;
+    if (R.shas['meta.json'] && (fresh || R.shas['meta.json'] !== base0['meta.json'])) { try { GH_CHUNK = JSON.parse(ghDec.decode(await this.blob(repo, R.shas['meta.json']))).chunk || 64; } catch (e) {} }
+    const files = ghProjectFiles(P), local = this.localShas(files), base = GH_CHUNK === (g.chunk || 64) ? base0 : Object.fromEntries(Object.entries(base0).filter(([k]) => !k.startsWith('terrain/'))); // first time: GitHub is the truth, local copy kept below as a backup
     const changed = [], log = [];
     if (fresh && R.shas['meta.json']) {
       const meta = JSON.parse(ghDec.decode(await this.blob(repo, R.shas['meta.json'])));
@@ -14128,7 +14157,7 @@ const GitSync = {
     let commits = [];
     if (g.commit) { try { const cmp = await ghFetch('/repos/' + repo + '/compare/' + g.commit + '...' + R.head); commits = (cmp.commits || []).map((c) => ({ msg: c.commit.message, who: (c.commit.author || {}).name || '', when: (c.commit.author || {}).date || '' })).reverse(); } catch (e) {} }
     else commits = [{ msg: 'Перше отримання з GitHub', who: '', when: '' }];
-    g.commit = R.head; g.shas = R.shas;
+    g.commit = R.head; g.shas = R.shas; g.chunk = GH_CHUNK;
     this.journal(P, { kind: 'pull', at: Date.now(), summary: ghSummary(changed) || 'без змін у файлах', commits: commits.slice(0, 20).map((c) => c.msg.split('\n')[0]) });
     if (changed.length) { ensureRpgDefaults(P); ensureExtraDefaults(P); App.afterBigChange(terrainTouched); }
     App.markDirty();
@@ -14141,10 +14170,11 @@ const GitSync = {
     let R = await this.remoteTree(repo, branch, dir), pulled = null;
     if (R.head && R.head !== g.commit) { pulled = await this.pull(P, true); R = await this.remoteTree(repo, branch, dir); }
     this.step('Готую файли…');
+    GH_CHUNK = ghWantChunk(P);
     const files = ghProjectFiles(P), local = this.localShas(files), pre = dir ? dir + '/' : '';
     const changed = Object.keys(files).filter((p) => local[p] !== R.shas[p]);
     const removed = Object.keys(R.shas).filter((p) => !(p in files) && (p.endsWith('.json') || p.startsWith('terrain/')));
-    if (!changed.length && !removed.length) { g.commit = R.head; g.shas = R.shas; return { nothing: true, pulled }; }
+    if (!changed.length && !removed.length) { g.commit = R.head; g.shas = R.shas; g.chunk = GH_CHUNK; return { nothing: true, pulled }; }
     if (!R.head) { // empty repository: the git data API needs one commit first
       await ghFetch('/repos/' + repo + '/contents/README.md', { method: 'PUT', body: { message: 'Worldsmith: старт', content: bytesToBase64(ghEnc.encode('# ' + P.name + '\n\nСвіт із редактора Worldsmith. Папка `' + (dir || '.') + '`.\n')), branch } });
       R = await this.remoteTree(repo, branch, dir);
@@ -14152,7 +14182,7 @@ const GitSync = {
     const entries = [], bins = changed.filter((p) => !p.endsWith('.json'));
     for (const p of changed) if (p.endsWith('.json')) entries.push({ path: pre + p, mode: '100644', type: 'blob', content: ghDec.decode(files[p]) });
     let done = 0; this.step('Надсилаю рельєф: 0 з ' + bins.length);
-    await ghPool(bins, 6, async (p) => { const bl = await ghFetch('/repos/' + repo + '/git/blobs', { method: 'POST', body: { content: bytesToBase64(files[p]), encoding: 'base64' } }); entries.push({ path: pre + p, mode: '100644', type: 'blob', sha: bl.sha }); done++; this.step('Надсилаю рельєф: ' + done + ' з ' + bins.length); });
+    await ghPool(bins, 3, async (p) => { const bl = await ghFetch('/repos/' + repo + '/git/blobs', { method: 'POST', body: { content: bytesToBase64(files[p]), encoding: 'base64' } }); entries.push({ path: pre + p, mode: '100644', type: 'blob', sha: bl.sha }); done++; this.step('Надсилаю рельєф: ' + done + ' з ' + bins.length); });
     this.step('Записую зміни (' + changed.length + ' файлів)…');
     for (const p of removed) entries.push({ path: pre + p, mode: '100644', type: 'blob', sha: null });
     const tree = await ghFetch('/repos/' + repo + '/git/trees', { method: 'POST', body: { base_tree: R.tree, tree: entries } });
@@ -14160,7 +14190,7 @@ const GitSync = {
     const msg = (note ? note.trim() + '\n\n' : '') + 'Змінено: ' + summary + '\n\n' + changed.map((p) => '* ' + p).join('\n');
     const commit = await ghFetch('/repos/' + repo + '/git/commits', { method: 'POST', body: { message: msg, tree: tree.sha, parents: R.head ? [R.head] : [] } });
     await ghFetch('/repos/' + repo + '/git/refs/heads/' + encodeURIComponent(branch), { method: 'PATCH', body: { sha: commit.sha, force: false } });
-    g.commit = commit.sha; g.shas = Object.assign({}, R.shas, local); for (const p of removed) delete g.shas[p];
+    g.commit = commit.sha; g.chunk = GH_CHUNK; g.shas = Object.assign({}, R.shas, local); for (const p of removed) delete g.shas[p];
     this.journal(P, { kind: 'push', at: Date.now(), summary, commits: note ? [note.split('\n')[0]] : [] });
     App.markDirty();
     return { changed, summary, pulled };
@@ -14178,9 +14208,10 @@ const GitSync = {
     const data = {}; for (const k of ['name', 'seaLevel', 'gen', 'maxHeight'].concat(OBJ_KEYS)) if (meta[k] !== undefined) data[k] = meta[k];
     for (const k of LIST_KEYS) data[k] = R.shas[k + '.json'] ? JSON.parse(ghDec.decode(await this.blob(repo, R.shas[k + '.json']))) : [];
     applyProjectData(NP, JSON.stringify(data));
+    GH_CHUNK = meta.chunk || 64;
     const cl = ghChunkList(NP); let got = 0;
-    await ghPool(cl, 6, async ([cx, cy]) => { const sha = R.shas['terrain/c_' + cx + '_' + cy + '.bin']; if (sha) ghWriteChunk(NP, cx, cy, ghUnpackChunk(await this.blob(repo, sha))); got++; this.step('Завантажую рельєф: ' + got + ' з ' + cl.length); });
-    NP.ui = { git: { repo, branch, dir, commit: R.head, shas: R.shas, log: [{ kind: 'pull', at: Date.now(), summary: 'Відкрито з GitHub', commits: [] }] } };
+    await ghPool(cl, 4, async ([cx, cy]) => { const sha = R.shas['terrain/c_' + cx + '_' + cy + '.bin']; if (sha) ghWriteChunk(NP, cx, cy, ghUnpackChunk(await this.blob(repo, sha))); got++; this.step('Завантажую рельєф: ' + got + ' з ' + cl.length); });
+    NP.ui = { git: { repo, branch, dir, commit: R.head, shas: R.shas, chunk: GH_CHUNK, log: [{ kind: 'pull', at: Date.now(), summary: 'Відкрито з GitHub', commits: [] }] } };
     return NP;
   },
   journal(P, e) { const g = GitCfg.proj(P); g.log = (g.log || []).concat(e).slice(-30); }
@@ -14240,7 +14271,7 @@ function gitSection(P) {
     }, 'ghost wide'));
 }
 const _panelsFileGit = Panels.file;
-const EDITOR_BUILD = '67 · 20.11.2026';
+const EDITOR_BUILD = '72 · 21.11.2026';
 Panels.file = function () { const out = _panelsFileGit(); out.splice(2, 0, gitSection(App.P)); out.push(hint('Версія редактора: ' + EDITOR_BUILD)); return out; };
 
 'use strict';
@@ -15432,7 +15463,7 @@ const CityDrag = {
       if (!App.canvas || !App.canvas.contains(e.target) && e.target !== App.canvas) return;
       const city = cityById(App.P, App._citySel.city); if (!city) return;
       const p = App.pos(e); let best = null;
-      for (const v of cityVertices(city)) { const [sx, sy] = App.mapToScreen(v.p[0], v.p[1]), d = Math.hypot(sx - p[0], sy - p[1]); if (d < 16 && (!best || d < best.d)) best = { v, d }; }
+      const R = e.pointerType === 'touch' ? 13 : 9; for (const v of cityVertices(city)) { const [sx, sy] = App.mapToScreen(v.p[0], v.p[1]), d = Math.hypot(sx - p[0], sy - p[1]); if (d < R && (!best || d < best.d)) best = { v, d }; }
       if (!best) return;
       e.stopPropagation(); e.preventDefault();
       Undo.push('all');
@@ -15830,7 +15861,7 @@ Panels.terrain = function () {
 };
 
 // ---- graphics settings (3D) ----
-const GFX_DEFAULTS = { gfxGrass: 1, gfxTrees: 1, gfxAO: true, gfxClouds: 1, gfxBirds: true, gfxPost: true, gfxExposure: 1, gfxContrast: 1.06, gfxSaturation: 1.08, gfxWarmth: 0.05, gfxVignette: 0.35, gfxGrain: 0.12, gfxBloom: 0.25 };
+const GFX_DEFAULTS = { gfxGrass: 1, gfxTrees: 1, gfxAO: true, gfxClouds: 1, gfxBirds: true, gfxPost: true, gfxExposure: 1, gfxContrast: 1.06, gfxSaturation: 1.08, gfxWarmth: 0.05, gfxVignette: 0.35, gfxGrain: 0.12, gfxBloom: 0.25, gfxFarDensity: 0 };
 Object.assign(AppSettings.defaults, GFX_DEFAULTS);
 const gfxGet = (k) => AppSettings.get(k);
 function gfxSection(onChange) {
@@ -15838,6 +15869,8 @@ function gfxSection(onChange) {
   return section('Графіка в 3D',
     slider('Дальність трави', gfxGet('gfxGrass'), 0.3, 3, 0.1, set('gfxGrass'), (v) => Math.round(v * 100) + '%'),
     slider('Дальність дерев і туману', gfxGet('gfxTrees'), 0.5, 2.5, 0.1, set('gfxTrees'), (v) => Math.round(v * 100) + '%'),
+    slider('Дальні дерева-спрайти: скільки показувати', gfxGet('gfxFarDensity'), 0, 1, 0.05, (v) => { AppSettings.set('gfxFarDensity', v); try { if (typeof TreeLOD !== 'undefined') { TreeLOD.markAll(); Walk.dirty = true; } } catch (e) {} }, (v) => (v < 0.001 ? 'авто (' + (typeof TreeLOD !== 'undefined' && TreeLOD.totalTrees && Walk.Q ? Math.round(100 / TreeLOD.autoFarStride()) : '—') + '%)' : Math.round(v * 100) + '%' + (v >= 0.999 ? ' — кожне дерево' : ''))),
+    hint('100% — кожне дерево вдалині стає спрайтом. «Авто» проріджує за якістю. Багато спрайтів на слабкому телефоні можуть гальмувати. Діє одразу.'),
     toggle('Затінення в западинах і під будівлями (AO)', gfxGet('gfxAO'), set('gfxAO')),
     slider('Хмарність', gfxGet('gfxClouds'), 0, 2, 0.05, set('gfxClouds', true), (v) => Math.round(v * 100) + '%'),
     toggle('Птахи в небі', gfxGet('gfxBirds'), set('gfxBirds', true)),
@@ -15901,10 +15934,15 @@ const Post = {
   },
   frame() {
     const bloom = Walk.root && Walk.root.querySelector('.post-bloom'); if (!bloom || bloom.hidden || !gfxGet('gfxPost')) return;
-    if ((this.n = (this.n || 0) + 1) % 4) return;
-    const cv = Walk.cv, w = Math.max(64, Math.round(cv.width / 6)), hh = Math.max(36, Math.round(cv.height / 6));
+    // copying the 3D picture back is slow (the GPU has to stop and hand it over), so while the camera moves
+    // the glow keeps its last picture and is refreshed once the view rests; the blur is done by CSS on the GPU
+    const m = Walk._lastMvp, sig = m ? (m[0] + m[5] * 3 + m[12] * 7 + m[13] * 11 + m[14] * 13 + m[2] * 17).toFixed(3) : '';
+    if (sig !== this.sig) { this.sig = sig; this.still = 0; return; }
+    if (++this.still !== 3 && this.still % 90) return;
+    const cv = Walk.cv, w = Math.max(64, Math.round(cv.width / 8)), hh = Math.max(36, Math.round(cv.height / 8));
     if (bloom.width !== w || bloom.height !== hh) { bloom.width = w; bloom.height = hh; }
-    const c = bloom.getContext('2d'); c.filter = 'brightness(0.9) contrast(2.2) blur(3px)'; try { c.drawImage(cv, 0, 0, w, hh); } catch (e) {} c.filter = 'none';
+    if (!bloom.style.filter) bloom.style.filter = 'brightness(0.9) contrast(2.2) blur(12px)';
+    const c = bloom.getContext('2d'); try { c.drawImage(cv, 0, 0, w, hh); } catch (e) {}
   }
 };
 // birds: small flocks gliding and flapping above the land (world, daytime)
@@ -15942,7 +15980,7 @@ const Birds = {
   }
 };
 const _drawLabelsX = Walk.drawLabels;
-Walk.drawLabels = function (mvp) { const r = _drawLabelsX.call(this, mvp); try { Birds.draw(mvp); Post.frame(); } catch (e) {} return r; };
+Walk.drawLabels = function (mvp) { this._lastMvp = mvp; const r = _drawLabelsX.call(this, mvp); try { Birds.draw(mvp); Post.frame(); } catch (e) {} return r; };
 const _walkStartX = Walk.start;
 Walk.start = function (...a) { const r = _walkStartX.apply(this, a); Birds.flocks = []; setTimeout(() => Post.apply(), 0); return r; };
 
@@ -16572,7 +16610,8 @@ function villageById(P, id) { return villagesList(P).find((v) => v.id === id); }
 function villageClear(P, v) { P.objects = P.objects.filter((o) => o.village !== v.id); P.roads = P.roads.filter((r) => r.village !== v.id); }
 
 function villageGenerate(P, v) {
-  villageClear(P, v); v._hull = null; v.yardList = []; let curYard = null;
+  // pinned houses (moved or pinned by hand) stay; everything else is made again around them
+  P.objects = P.objects.filter((o) => o.village !== v.id || o.pinned); P.roads = P.roads.filter((r) => r.village !== v.id); v._hull = null; v.yardList = []; let curYard = null;
   const cm = cellMeters(P), R = mulberry32(v.seed), st = VILLAGE_STYLES[v.style] || VILLAGE_STYLES.ukr;
   const tag = (o) => Object.assign(o, { id: uid('o'), village: v.id });
   const M2C = (m) => m / cm, res = P.res;
@@ -16585,7 +16624,8 @@ function villageGenerate(P, v) {
   // what is already there (not this village): circles in cells
   const busy = [];
   for (const o of P.objects) { const e = catalogGet(o.type); if (!e || e.cat === 'trees') continue; busy.push([o.x, o.y, M2C(Math.hypot(e.w, e.h) * (o.scale || 1) * 0.45)]); }
-  const inForest = (x, y) => P.forests.some((f) => f.poly && pointInPoly(x, y, f.poly));
+  // a village may stand in a forest: the trees give way only under its yards, houses and streets (see Forests.clearMask)
+  const inForest = () => false;
   const free = (x, y, r) => busy.every(([bx, by, br]) => Math.hypot(bx - x, by - y) > br + r);
   const placed = [];
   const put = (type, x, y, rotDeg, extra = {}) => { const e = catalogGet(type); if (!e) return null; const o = tag({ type, x: +x.toFixed(2), y: +y.toFixed(2), rot: Math.round(((rotDeg % 360) + 360) % 360), scale: 1, ...extra }); if (curYard) o.yard = curYard.id; P.objects.push(o); placed.push(o); if (e.cat !== 'decor' && e.cat !== 'trees' && !LEN_TYPES.has(type)) busy.push([o.x, o.y, M2C(Math.hypot(e.w, e.h) * (o.scale || 1) * 0.45)]); return o; };
@@ -16640,6 +16680,13 @@ function villageGenerate(P, v) {
     // scattered farmsteads, each with a track to the middle
     lines.length = 0;
   } else { const L = armsFor(2); lines.push(arm(a0, L), arm(a0 + Math.PI, L)); }
+  // streets edited by hand replace the layout (kept in the frame they were drawn in, turned with the village)
+  if (v.customLines && v.customLines.length) {
+    const da = a0 - (v.customA || 0), cs = Math.cos(da), sn = Math.sin(da);
+    lines.length = 0;
+    for (const L of v.customLines) lines.push(Object.assign({}, L, { pts: L.pts.map(([x, y]) => [x * cs - y * sn, x * sn + y * cs]), a: undefined }));
+  }
+  v._lines = lines.map((L) => Object.assign({}, L, { pts: L.pts.map((q) => [+q[0].toFixed(2), +q[1].toFixed(2)]) })); v._linesA = a0; v._c = [c[0], c[1]];
   // the streets themselves (cut where the land ends)
   const streetType = v.streetType === 'auto' ? st.street : v.streetType;
   const toCell = (p) => [c[0] + M2C(p[0]), c[1] + M2C(p[1])];
@@ -16795,7 +16842,7 @@ function villageSection(P, v) {
     row(toggle('Після переміщення підлаштувати під місцевість', v.refitOnMove !== false, (x) => { t('rf'); v.refitOnMove = x; App.markDirty(); })),
     v.angle != null ? btn('Поворот: як зручніше за рельєфом', () => { t('an'); v.angle = null; rebuild(false); }, 'ghost small') : null,
     row(btn('Перебудувати', () => rebuild(false), 'primary grow'), btn('Інший варіант', () => rebuild(true), 'ghost')),
-    hint('Село можна перетягнути за позначку центру чи будь-яку його будівлю, а повернути — за круглу ручку ⟳. «Перебудувати» застосовує налаштування до того самого варіанта, «Інший варіант» розкладає двори інакше. Після будівництва кожна хата, паркан чи дерево — звичайний об\'єкт: їх можна рухати, видаляти чи додавати свої (режим «Об\'єкти»). Перебудова замінює все, що поставило село.'),
+    hint('Село можна перетягнути за жовту позначку центру, а повернути — за круглу ручку ⟳. «Перебудувати» застосовує налаштування до того самого варіанта, «Інший варіант» розкладає двори інакше. Після будівництва кожна хата, паркан чи дерево — звичайний об\'єкт: їх можна рухати, видаляти чи додавати свої (режим «Об\'єкти»). Перебудова замінює все, що поставило село.'),
     row(btn('Прибрати село', () => { Undo.push('all'); villageClear(P, v); P.villages = villagesList(P).filter((q) => q !== v); App._villageSel = null; App.afterBigChange(true); App.markDirty(); UI.renderPanel(); }, 'danger small')));
 }
 function villageCreateAt(m) {
@@ -16929,13 +16976,15 @@ const VillageDrag = {
   handle(v) { const a = v.angle != null ? v.angle : v.a0 || 0, [sx, sy] = App.mapToScreen(v.x, v.y); return [sx + Math.cos(a) * 54, sy + Math.sin(a) * 54]; },
   init() {
     window.addEventListener('pointerdown', (e) => {
-      if (App.mode !== 'cities' || !App._villageSel || e.button > 0 || App.S.cityTool === 'lasso' || App.S.cityTool === 'village') return;
+      if (App.mode !== 'cities' || !App._villageSel || e.button > 0 || App.S.cityTool === 'lasso' || App.S.cityTool === 'village' || App._vStreetEdit) return;
       if (!App.canvas || (e.target !== App.canvas && !App.canvas.contains(e.target))) return;
       const P = App.P, v = villageById(P, App._villageSel); if (!v) return;
       const p = App.pos(e), m = App.screenToMap(p[0], p[1]), hd = this.handle(v);
       let mode = null;
-      if (Math.hypot(hd[0] - p[0], hd[1] - p[1]) < 18) mode = 'turn';
-      else { const hit = villageAt(P, m, 14 / App.k); if (hit === v) mode = 'move'; }
+      // only the two handles move the village: the centre dot (move) and the ⟳ dot (turn); a finger anywhere else pans the map
+      const touch = e.pointerType === 'touch', [cx, cy] = App.mapToScreen(v.x, v.y);
+      if (Math.hypot(hd[0] - p[0], hd[1] - p[1]) < (touch ? 20 : 14)) mode = 'turn';
+      else if (Math.hypot(cx - p[0], cy - p[1]) < (touch ? 18 : 12)) mode = 'move';
       if (!mode) return;
       e.stopPropagation(); e.preventDefault();
       Undo.push('all');
@@ -17136,13 +17185,16 @@ const TreeLOD = {
     const P = App.P, cm = Walk.cm, out = [];
     for (const k of keys) {
       const list = this.idx.get(k) || [], objs = this.objIdx.get(k) || [];
-      for (let n = 0; n < list.length; n += 2) { const ti = list[n + 1]; if (stride > 1 && (ti + list[n]) % stride) continue; const f = P.forests[list[n]], t = f && f._trees; if (!t || ti >= t.n) continue; out.push(t.x[ti] * cm, t.y[ti] * cm, t.sp[ti], t.sc[ti] * (stride > 1 ? 1 + Math.min(0.45, (stride - 1) * 0.1) : 1), ti * 7919 + f.id.length); }
+      for (let n = 0; n < list.length; n += 2) { const ti = list[n + 1]; if (stride > 1 && ((Math.imul(ti, 2654435761) ^ (list[n] * 40503)) >>> 0) % 10000 >= 10000 / stride) continue; const f = P.forests[list[n]], t = f && f._trees; if (!t || ti >= t.n) continue; out.push(t.x[ti] * cm, t.y[ti] * cm, t.sp[ti], t.sc[ti] * (stride > 1 ? 1 + Math.min(0.45, (stride - 1) * 0.1) : 1), ti * 7919 + f.id.length); }
       for (const o of objs) { const sp = TREES.findIndex((q) => 'tree_' + q.id === o.type); if (sp >= 0) out.push(o.x * cm, o.y * cm, sp, o.scale || 1, hashStr(o.id)); }
     }
     return out;
   },
+  // how many trees one far picture stands for: «авто» thins by quality, or the share set in Settings (100% = every tree)
+  autoFarStride() { const cap = [14000, 36000, 80000][Walk.Q.q - 1]; return Math.max(1, Math.ceil(this.totalTrees / cap)); },
+  farStride() { const d = AppSettings.get('gfxFarDensity'); return d > 0.001 ? Math.max(1, 1 / Math.min(1, d)) : this.autoFarStride(); },
   buildFar(k, ex) {
-    const W = Walk, cap = [14000, 36000, 80000][W.Q.q - 1], stride = Math.max(1, Math.ceil(this.totalTrees / cap));
+    const W = Walk, stride = this.farStride();
     const keys = this.smallOf(k).filter((q) => !ex.has(q)), a = this.treesOf(keys, stride), far = new MB();
     for (let n = 0; n < a.length; n += 5) W.farTree(far, a[n], W.groundAt(a[n], a[n + 1]), a[n + 1], a[n + 2], a[n + 3], a[n + 4]);
     const c = this.cell(k); W.freeMesh(c.far); c.far = far.n ? W.upload(far) : null; c.farDirty = false;
@@ -17179,8 +17231,9 @@ const TreeLOD = {
     for (const [, k] of nearWant) { const c = this.ncells.get(k); if (c && c.near && !c.nearDirty) { shownNear.add(k); nearParts.push(c.near); trunks.push(...c.trunks); c.used = now; } else if (c && c.near) { shownNear.add(k); nearParts.push(c.near); c.used = now; } }
     // big squares: pictures of everything except the small squares shown as real trees
     const farKeys = new Set(); for (const k of this.idx.keys()) farKeys.add(this.farKeyOf(k)); for (const k of this.objIdx.keys()) farKeys.add(this.farKeyOf(k));
-    // one kind of work per frame: while real trees are being made, the far pictures wait (unless missing)
-    const farUntil = force ? t0 + 60 : didNear ? t0 : performance.now() + 5, farParts = []; let farBuilt = false;
+    // far pictures are rebuilt every frame too (one square per frame while real trees are being made),
+    // otherwise on a big world the light far trees stopped following the camera and left bare patches
+    const farUntil = force ? t0 + 60 : performance.now() + (didNear ? 3 : 5), farParts = []; let farBuilt = false;
     for (const fk of farKeys) {
       const c = this.cell(fk), ex = new Set(this.smallOf(fk).filter((q) => shownNear.has(q))), exKey = [...ex].sort().join('|');
       if ((c.farDirty || c.ex !== exKey) && (performance.now() < farUntil || !c.far)) { if (performance.now() < farUntil + (c.far ? 0 : 30) && !(farBuilt && c.far)) { this.buildFar(fk, ex); c.ex = exKey; if (!force) farBuilt = true; } }
@@ -17290,7 +17343,7 @@ Forests.coverGrid = function () {
 // --- trees do not grow on buildings, roads and inside villages ---
 Forests.clearMask = function () {
   const P = App.P, res = P.res, cm = cellMeters(P);
-  let sig = res + ':' + P.objects.length + ':' + P.roads.length + ':' + (P.villages || []).length;
+  let sig = res + ':' + P.objects.length + ':' + P.roads.length + ':' + (P.villages || []).map((v) => (v.yardList || []).length + ',' + v.x + ',' + v.y).join(';');
   for (const o of P.objects) sig += o.x.toFixed(0) + o.y.toFixed(0);
   for (const r of P.roads) sig += r.points.length + (r.points[0] || []).join(',');
   if (this._clear && this._clearSig === sig) return this._clear;
@@ -17298,7 +17351,8 @@ Forests.clearMask = function () {
   const disc = (cx, cy, r) => { for (let y = Math.max(0, Math.floor(cy - r)); y <= Math.min(res - 1, Math.ceil(cy + r)); y++) for (let x = Math.max(0, Math.floor(cx - r)); x <= Math.min(res - 1, Math.ceil(cx + r)); x++) if ((x - cx) ** 2 + (y - cy) ** 2 <= r * r) m[y * res + x] = 1; };
   for (const o of P.objects) { const e = catalogGet(o.type); if (!e || e.cat === 'trees' || e.cat === 'nature') continue; if (LEN_TYPES.has(o.type)) continue; disc(o.x, o.y, (Math.max(e.w, e.h) * (o.scale || 1) / 2 + 1.5) / cm); }
   for (const r of P.roads) { const w = (((ROAD_TYPES[r.type] || ROAD_TYPES.road).width) / 2 + 1.5) / cm; for (let i = 0; i + 1 < r.points.length; i++) { const a = r.points[i], b = r.points[i + 1], L = Math.hypot(b[0] - a[0], b[1] - a[1]), n = Math.max(1, Math.ceil(L / Math.max(0.5, w))); for (let k = 0; k <= n; k++) disc(a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n, w); } }
-  for (const v of P.villages || []) { const hull = villageHull(P, v); if (!hull) continue; const bb = polyBBox(hull); for (let y = Math.max(0, Math.floor(bb.y0)); y <= Math.min(res - 1, Math.ceil(bb.y1)); y++) for (let x = Math.max(0, Math.floor(bb.x0)); x <= Math.min(res - 1, Math.ceil(bb.x1)); x++) if (pointInPoly(x, y, hull)) m[y * res + x] = 1; }
+  // villages: trees go only inside the yards (and under the houses and streets above); between the yards the forest stays
+  for (const v of P.villages || []) for (const yd of v.yardList || []) { const pl = yd.outline; if (!pl || pl.length < 3) continue; const bb = polyBBox(pl); for (let y = Math.max(0, Math.floor(bb.y0 - 1)); y <= Math.min(res - 1, Math.ceil(bb.y1 + 1)); y++) for (let x = Math.max(0, Math.floor(bb.x0 - 1)); x <= Math.min(res - 1, Math.ceil(bb.x1 + 1)); x++) if (pointInPoly(x, y, pl) || distToPolyEdge(x, y, pl) < 1.2 / cm) m[y * res + x] = 1; }
   this._clear = m; this._clearSig = sig; return m;
 };
 
@@ -18466,7 +18520,7 @@ function exportGroups(files, P) {
     }
     const streets = P.roads.filter((r) => r.city === c.id).map((r) => ({ id: r.id, name: r.name, type: r.type, width: (ROAD_TYPES[r.type] || ROAD_TYPES.road).width, points: r.points.map(([x, y]) => pt3(x, y)) }));
     const file = 'world/cities/' + c.id + '/city.json';
-    put(file, { kind: 'city', id: c.id, name: c.name, centre: centreW(c.poly), bounds: boundsW(c.poly), outline: outlineW(c.poly), wall: !!c.wall, gates: (c.gateList || []).map((g) => pt3((g.p || g)[0], (g.p || g)[1])),
+    put(file, { kind: 'city', id: c.id, name: c.name, state: c.ruin ? (c.ruin >= 0.6 ? 'ruins' : 'abandoned') : 'alive', ruin: c.ruin || 0, centre: centreW(c.poly), bounds: boundsW(c.poly), outline: outlineW(c.poly), wall: !!c.wall, gates: (c.gateList || []).map((g) => pt3((g.p || g)[0], (g.p || g)[1])),
       fortifications: fort, streets, districts: (c.districtList || []).map((d) => ({ id: d.id, name: d.name, type: d.type, centre: d.poly ? centreW(d.poly) : null, outline: d.poly ? outlineW(d.poly) : [], buildings: byD.get(d.id) || [], npcs: P.npcs.filter((n) => n.x != null && d.poly && pointInPoly(n.x, n.y, d.poly)).map((n) => n.id) })),
       otherObjects: other, npcs: inPlace(npcPlace, 'city', c.id), merchants: inPlace(merchantPlace, 'city', c.id), quests: inPlace(questPlace, 'city', c.id), interiors: objs.filter((o) => interiorOf.has(o.id)).map((o) => ({ building: o.id, interior: interiorOf.get(o.id) })) });
     index.groups.push({ kind: 'city', id: c.id, name: c.name, file, centre: centreW(c.poly), bounds: boundsW(c.poly), counts: { districts: (c.districtList || []).length, buildings: objs.length, streets: streets.length } });
@@ -18495,7 +18549,7 @@ function exportGroups(files, P) {
     }
     const streets = P.roads.filter((r) => r.village === v.id).map((r) => ({ id: r.id, name: r.name, type: r.type, width: (ROAD_TYPES[r.type] || ROAD_TYPES.road).width, points: r.points.map(([x, y]) => pt3(x, y)) }));
     const file = 'world/villages/' + v.id + '/village.json';
-    put(file, { kind: 'village', id: v.id, name: v.name, centre: pt3(v.x, v.y), bounds: boundsW(hull), outline: outlineW(hull), style: v.style, layout: v.layout,
+    put(file, { kind: 'village', id: v.id, name: v.name, state: v.ruin ? (v.ruin >= 0.6 ? 'ruins' : 'abandoned') : 'alive', ruin: v.ruin || 0, centre: pt3(v.x, v.y), bounds: boundsW(hull), outline: outlineW(hull), style: v.style, layout: v.layout,
       settings: { yardWidth: v.yardW, wealth: v.wealth, gardens: v.gardens, trees: v.trees, decor: v.decor, fields: v.fields, fence: v.fence, well: v.well, church: v.church, tavern: v.tavern, houses: v.houses, sheds: v.sheds, decorKinds: v.decorKinds },
       streets, centreObjects: centre, yards: [...yards.values()], fields, streetTrees, otherObjects: other,
       npcs: inPlace(npcPlace, 'village', v.id), merchants: inPlace(merchantPlace, 'village', v.id), quests: inPlace(questPlace, 'village', v.id), interiors: objs.filter((o) => interiorOf.has(o.id)).map((o) => ({ building: o.id, interior: interiorOf.get(o.id) })) });
@@ -18521,7 +18575,7 @@ function exportGroups(files, P) {
     if (o.city || o.village) continue;
     if (o.type.startsWith('tree_') && !looseTreeObjs.has(o.id)) continue; // already in a forest
     const e = catalogGet(o.type), cat = e ? e.cat : 'unknown', oe = objEntry(o);
-    const rg = regionOf(o.x, o.y), zn = o.zone || zoneOf(o.x, o.y); if (rg) oe.region = rg; if (zn) oe.zone = zn; if (o.autoDecor) oe.autoDecor = true;
+    const rg = regionOf(o.x, o.y), zn = o.zone || zoneOf(o.x, o.y); if (rg) oe.region = rg; if (zn) oe.zone = zn; if (o.autoDecor) oe.autoDecor = true; if (o.ruin) oe.ruin = o.ruin; if (o.pinned) oe.pinned = true; if (o.noLod) oe.noLod = true;
     let a = byCat.get(cat); if (!a) byCat.set(cat, (a = [])); a.push(oe);
   }
   const catName = (id) => (CATEGORIES.find((c) => c.id === id) || {}).name || id;
@@ -19543,6 +19597,316 @@ const RidgeTool = {
       if (g / tot > 0.5 && R.minDist < 30) R.minDist = Math.round(R.minDist * 3 * 10) / 10;
     }
     return _genAllS19(...a);
+  };
+}
+
+'use strict';
+// ============================================================================================
+// STAGE 20
+// 1. Villages and towns rebuild only their own patch of the map: the ground levelled under each
+//    house is gathered into one update, and forests nearby regrow only there (not the whole map).
+// 2. Edit handles do not catch a finger that pans the map (small touch zones, only for the selected
+//    village or town, and only when the drag starts right on a handle).
+// 3. Village streets you can edit (move points, bend, branch, delete a branch) and houses you can move
+//    and pin, so they stay where you put them when the village is rebuilt.
+// 4. Ruins: a village or a town can be lived in, run down, or in ruins.
+// ============================================================================================
+
+// ------------------------------- 1. local rebuild -------------------------------
+const AreaBatch = {
+  depth: 0, rect: null,
+  add(x0, y0, x1, y1) { const r = this.rect; this.rect = r ? { x0: Math.min(r.x0, x0), y0: Math.min(r.y0, y0), x1: Math.max(r.x1, x1), y1: Math.max(r.y1, y1) } : { x0, y0, x1, y1 }; },
+  addObjs(list, pad) { for (const o of list) { const e = catalogGet(o.type), s = e ? Math.max(e.w, e.h, o.len || 0) / cellMeters(App.P) : 4; this.add(o.x - s - pad, o.y - s - pad, o.x + s + pad, o.y + s + pad); } }
+};
+{
+  // while a village or town is being built, ground changes are only collected
+  const _changedA = Terrain.changed.bind(Terrain);
+  Terrain.changed = function (x0, y0, x1, y1) { if (AreaBatch.depth > 0) { AreaBatch.add(x0, y0, x1, y1); return; } return _changedA(x0, y0, x1, y1); };
+  Terrain.changedNow = _changedA;
+  const around = (fn, objsOf) => function (...a) {
+    const P = App.P, before = objsOf(P, ...a);
+    AreaBatch.depth++; if (AreaBatch.depth === 1) AreaBatch.rect = null;
+    AreaBatch.addObjs(before, 6 / cellMeters(P));
+    let r;
+    try { r = fn.apply(this, a); } finally {
+      AreaBatch.addObjs(objsOf(P, ...a), 6 / cellMeters(P));
+      AreaBatch.depth--;
+      if (AreaBatch.depth === 0 && AreaBatch.rect) {
+        const res = P.res, q = AreaBatch.rect;
+        const x0 = clamp(Math.floor(q.x0), 0, res - 1), y0 = clamp(Math.floor(q.y0), 0, res - 1), x1 = clamp(Math.ceil(q.x1), 0, res - 1), y1 = clamp(Math.ceil(q.y1), 0, res - 1);
+        try { _changedA(x0, y0, x1, y1); } catch (e) { console.warn(e); }
+        App._pendingAt = performance.now(); App._pendingArea = App._pendingArea ? { x0: Math.min(App._pendingArea.x0, x0), y0: Math.min(App._pendingArea.y0, y0), x1: Math.max(App._pendingArea.x1, x1), y1: Math.max(App._pendingArea.y1, y1) } : { x0, y0, x1, y1 };
+      }
+    }
+    return r;
+  };
+  villageGenerate = around(villageGenerate, (P, v) => P.objects.filter((o) => o.village === v.id));
+  cityGenerate = around(cityGenerate, (P, c) => P.objects.filter((o) => o.city === c.id));
+  if (typeof villageClear === 'function') villageClear = around(villageClear, (P, v) => P.objects.filter((o) => o.village === v.id));
+  // afterBigChange after building a village or town: only that patch is redrawn, only nearby forests regrow
+  const _abc = App.afterBigChange;
+  App.afterBigChange = function (terrain) {
+    const a = this._pendingArea && performance.now() - (this._pendingAt || 0) < 5000 ? this._pendingArea : null; this._pendingArea = null;
+    if (!a) return _abc.call(this, terrain);
+    if (this.sel && !this.findSel()) this.sel = null;
+    Forests._clear = null; // the clearing mask is made again for the new yards
+    this.regenForestsIn(a);
+    SpriteCache.map.clear(); UI.renderPanel(); this.requestDraw(); this.markDirty();
+  };
+}
+
+// ------------------------------- 2. handles that do not catch panning -------------------------------
+// (applied in the handle hit tests below: the touch radius is small, and only the selected place has handles)
+const HANDLE_R = () => (App._touch ? 14 : 9);
+window.addEventListener('touchstart', () => { App._touch = true; }, { passive: true, capture: true });
+
+// ------------------------------- 3. village streets by hand -------------------------------
+// In "edit streets" mode the streets of the selected village show their points: drag a point, tap the
+// small dot between two points to add a bend, tap a point to pick it (then delete it, branch a new street
+// from it, or delete the whole street in the card). Each change rebuilds the yards along the new streets.
+const StreetEdit = {
+  v() { const id = App._vStreetEdit; return id && App.mode === 'cities' ? villageById(App.P, id) : null; },
+  start(v) {
+    if (!v._lines) { try { villageGenerate(App.P, v); } catch (e) { console.warn(e); } }
+    if (!v.customLines) { v.customLines = JSON.parse(JSON.stringify(v._lines || [])); v.customA = v._linesA || 0; }
+    App._vStreetEdit = v.id; App._vStreetSel = null; App.requestDraw(); UI.renderPanel();
+  },
+  stop() { App._vStreetEdit = null; App._vStreetSel = null; App.requestDraw(); UI.renderPanel(); },
+  // custom frame <-> map cells
+  rot(v) { const da = (v._linesA || 0) - (v.customA || 0); return [Math.cos(da), Math.sin(da)]; },
+  toMap(v, p) { const [c, s] = this.rot(v), cm = cellMeters(App.P), c0 = v._c || [v.x, v.y]; return [c0[0] + (p[0] * c - p[1] * s) / cm, c0[1] + (p[0] * s + p[1] * c) / cm]; },
+  fromMap(v, m) { const [c, s] = this.rot(v), cm = cellMeters(App.P), c0 = v._c || [v.x, v.y], x = (m[0] - c0[0]) * cm, y = (m[1] - c0[1]) * cm; return [+(x * c + y * s).toFixed(2), +(-x * s + y * c).toFixed(2)]; },
+  rebuild(v) {
+    const P = App.P;
+    try { villageGenerate(P, v); } catch (e) { console.error(e); }
+    App.afterBigChange(true); App.markDirty();
+  },
+  hit(v, p, touch) {
+    const R = touch ? 16 : 10, L = v.customLines || [];
+    let best = null;
+    L.forEach((ln, li) => ln.pts.forEach((q, pi) => { const [sx, sy] = App.mapToScreen(...this.toMap(v, q)), d = Math.hypot(sx - p[0], sy - p[1]); if (d < R && (!best || d < best.d)) best = { kind: 'pt', li, pi, d }; }));
+    if (best) return best;
+    L.forEach((ln, li) => { for (let pi = 0; pi + 1 < ln.pts.length; pi++) { const a = ln.pts[pi], b = ln.pts[pi + 1], mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]; const [sx, sy] = App.mapToScreen(...this.toMap(v, mid)), d = Math.hypot(sx - p[0], sy - p[1]); if (d < R * 0.85 && (!best || d < best.d)) best = { kind: 'mid', li, pi, d, mid }; } });
+    return best;
+  },
+  init() {
+    window.addEventListener('pointerdown', (e) => {
+      const v = this.v(); if (!v || e.button > 0) return;
+      if (!App.canvas || (e.target !== App.canvas && !App.canvas.contains(e.target))) return;
+      const p = App.pos(e), h0 = this.hit(v, p, e.pointerType === 'touch'); if (!h0) return;
+      e.stopPropagation(); e.preventDefault();
+      Undo.push('all');
+      let h = h0;
+      if (h.kind === 'mid') { v.customLines[h.li].pts.splice(h.pi + 1, 0, h.mid.map((x) => +x.toFixed(2))); h = { kind: 'pt', li: h.li, pi: h.pi + 1, inserted: true }; }
+      this.d = { id: e.pointerId, h, moved: !!h.inserted, sx: p[0], sy: p[1] };
+      App._vStreetSel = [h.li, h.pi];
+      App.canvas.setPointerCapture(e.pointerId); App.requestDraw();
+    }, true);
+    window.addEventListener('pointermove', (e) => {
+      const d = this.d; if (!d || e.pointerId !== d.id) return;
+      e.stopPropagation(); e.preventDefault();
+      const v = this.v(); if (!v) { this.d = null; return; }
+      const p = App.pos(e); if (Math.hypot(p[0] - d.sx, p[1] - d.sy) > 5) d.moved = true;
+      if (!d.moved) return;
+      v.customLines[d.h.li].pts[d.h.pi] = this.fromMap(v, App.screenToMap(p[0], p[1]));
+      App.requestDraw();
+    }, true);
+    const end = (e) => {
+      const d = this.d; if (!d || e.pointerId !== d.id) return;
+      e.stopPropagation(); e.preventDefault(); this.d = null;
+      const v = this.v(); if (!v) return;
+      if (d.moved) this.rebuild(v);
+      UI.renderPanel(); App.requestDraw();
+    };
+    window.addEventListener('pointerup', end, true); window.addEventListener('pointercancel', end, true);
+  },
+  draw(c) {
+    const v = this.v(); if (!v || !v.customLines) return;
+    c.save(); c.lineCap = 'round'; c.lineJoin = 'round';
+    const sel = App._vStreetSel;
+    v.customLines.forEach((ln, li) => {
+      c.beginPath(); ln.pts.forEach((q, i) => { const [sx, sy] = App.mapToScreen(...this.toMap(v, q)); i ? c.lineTo(sx, sy) : c.moveTo(sx, sy); });
+      c.strokeStyle = 'rgba(20,16,8,0.55)'; c.lineWidth = 7; c.stroke(); c.strokeStyle = sel && sel[0] === li ? '#ffe08a' : '#f2d27a'; c.lineWidth = 3; c.stroke();
+      for (let pi = 0; pi + 1 < ln.pts.length; pi++) { const a = ln.pts[pi], b = ln.pts[pi + 1], [sx, sy] = App.mapToScreen(...this.toMap(v, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2])); c.beginPath(); c.arc(sx, sy, 4, 0, 7); c.fillStyle = 'rgba(255,255,255,0.75)'; c.fill(); c.strokeStyle = '#1a1408'; c.lineWidth = 1; c.stroke(); }
+      ln.pts.forEach((q, pi) => { const [sx, sy] = App.mapToScreen(...this.toMap(v, q)), on = sel && sel[0] === li && sel[1] === pi; c.beginPath(); c.arc(sx, sy, on ? 9 : 7, 0, 7); c.fillStyle = on ? '#ff9f43' : '#f2d27a'; c.fill(); c.strokeStyle = '#1a1408'; c.lineWidth = 1.5; c.stroke(); });
+    });
+    c.restore();
+  },
+  section(P, v) {
+    const on = App._vStreetEdit === v.id, out = [];
+    out.push(btn(on ? '✓ Готово з вулицями' : '✎ Редагувати вулиці', () => (on ? this.stop() : this.start(v)), on ? 'primary wide' : 'ghost wide'));
+    if (on) {
+      out.push(hint('Тягніть жовті точки вулиць. Біла крапка між точками — додати вигин. Торкніться точки, щоб вибрати її. Двори самі перебудуються вздовж нових вулиць.'));
+      const sel = App._vStreetSel, L = v.customLines || [], ln = sel && L[sel[0]];
+      if (ln) {
+        out.push(row(
+          btn('Видалити точку', () => { Undo.push('all'); if (ln.pts.length > 2) ln.pts.splice(sel[1], 1); else L.splice(sel[0], 1); App._vStreetSel = null; this.rebuild(v); UI.renderPanel(); }, 'ghost small'),
+          btn('Відгалузити вулицю', () => {
+            Undo.push('all');
+            const q = ln.pts[sel[1]], a = ln.pts[Math.max(0, sel[1] - 1)], b = ln.pts[Math.min(ln.pts.length - 1, sel[1] + 1)];
+            let dx = b[0] - a[0], dy = b[1] - a[1]; const l = Math.hypot(dx, dy) || 1; dx /= l; dy /= l;
+            // out to the side that points away from the middle
+            let nx = -dy, ny = dx; if (nx * q[0] + ny * q[1] < 0) { nx = -nx; ny = -ny; }
+            L.push({ pts: [[q[0], q[1]], [+(q[0] + nx * 45).toFixed(2), +(q[1] + ny * 45).toFixed(2)]] });
+            App._vStreetSel = [L.length - 1, 1]; this.rebuild(v); UI.renderPanel();
+          }, 'ghost small'),
+          btn('Видалити вулицю', () => { Undo.push('all'); L.splice(sel[0], 1); App._vStreetSel = null; this.rebuild(v); UI.renderPanel(); }, 'danger small')));
+      } else out.push(row(btn('＋ Нова вулиця', () => { Undo.push('all'); const a = Math.random() * Math.PI * 2; L.push({ pts: [[0, 0], [+(Math.cos(a) * 50).toFixed(2), +(Math.sin(a) * 50).toFixed(2)]] }); App._vStreetSel = [L.length - 1, 1]; this.rebuild(v); UI.renderPanel(); }, 'ghost small')));
+    }
+    if (v.customLines) out.push(btn('Скинути вулиці до планування', async () => { if (!(await UI.confirm('Повернути вулиці, як у вибраному плануванні? Ваші зміни вулиць зникнуть.', 'Скинути'))) return; Undo.push('all'); delete v.customLines; delete v.customA; App._vStreetEdit = null; App._vStreetSel = null; this.rebuild(v); UI.renderPanel(); }, 'ghost small'));
+    const pinned = P.objects.filter((o) => o.village === v.id && o.pinned).length;
+    if (pinned) out.push(row(h('span', { class: 'muted' }, 'Закріплених будівель: ' + pinned), btn('Відкріпити всі', () => { Undo.push('data'); for (const o of P.objects) if (o.village === v.id) delete o.pinned; App.markDirty(); UI.renderPanel(); }, 'ghost small')));
+    return section('Вулиці й будівлі', ...out, hint('Будівлю села можна пересунути в «Об\'єкти → Вибрати» — тоді вона закріплюється й не зникає при перебудові.'));
+  }
+};
+StreetEdit.init();
+{
+  const _vsS = villageSection;
+  villageSection = function (P, v) { const out = _vsS(P, v); try { return h('div', null, StreetEdit.section(P, v), out); } catch (e) { console.warn(e); return out; } };
+  const _dovS = App.drawOverlay;
+  App.drawOverlay = function (c) { const r = _dovS.apply(this, arguments); try { StreetEdit.draw(c); } catch (e) { /* ignore */ } return r; };
+  // leaving the village or the mode ends street editing
+  const _setModeS = App.setMode;
+  App.setMode = function (m) { if (m !== 'cities') { App._vStreetEdit = null; App._vStreetSel = null; } return _setModeS.apply(this, arguments); };
+}
+
+// ------------------------------- 4. ruins -------------------------------
+// A village or a town has a state: lived in (0), run down (~0.35) or in ruins (~0.85). After it is built,
+// its buildings get a ruin degree (roofs fall in, walls break off at uneven heights, colours go grey),
+// fences and small things go missing, rubble lies about and bushes and young trees grow in the yards.
+const RUIN_STATES = [['0', 'Живе'], ['0.35', 'Занедбане'], ['0.85', 'Руїни']];
+function ruinize(P, owner, key) {
+  const R = owner.ruin || 0; if (!(R > 0)) return;
+  const rnd = mulberry32((owner.seed || 1) * 7 + 13), cm = cellMeters(P), mine = P.objects.filter((o) => o[key] === owner.id && !o.pinned);
+  const drop = new Set(), add = [];
+  const tagNew = (type, x, y, rot) => { if (!catalogGet(type)) return; add.push({ id: uid('o'), type, x: +x.toFixed(2), y: +y.toFixed(2), rot: Math.round(rot) % 360, scale: 0.8 + rnd() * 0.5, [key]: owner.id, ruinBits: true }); };
+  const small = /^(barrels|crates|laundry|sunflowers|flowerbed|beehive|haycock|trough|doghouse|bench_log|woodcut|cart|lamp_post|market_stall|stall)/;
+  for (const o of mine) {
+    const e = catalogGet(o.type); if (!e || e.cat === 'trees' || e.cat === 'nature') continue;
+    if (/^fence_|^gate_/.test(o.type)) { if (rnd() < R * 0.8) drop.add(o); else if (rnd() < R) o.rot = Math.round((o.rot || 0) + (rnd() - 0.5) * 20); continue; }
+    if (small.test(o.type)) { if (rnd() < R * 0.9) drop.add(o); continue; }
+    if (o.type === 'stone_pile' || o.ruinBits) continue;
+    // run down: some houses still stand; in ruins nearly all are broken
+    const r = rnd() < R * 1.35 ? clamp(R * (0.55 + rnd() * 0.8), 0.12, 1) : 0;
+    if (r <= 0) continue;
+    o.ruin = +r.toFixed(2);
+    const sz = Math.max(e.w, e.h) * (o.scale || 1) / cm;
+    if (r > 0.35 && !LEN_TYPES.has(o.type)) {
+      for (let k = 0; k < 1 + Math.floor(r * 2.5); k++) if (rnd() < r) { const a = rnd() * Math.PI * 2, d = sz * (0.45 + rnd() * 0.5); tagNew('stone_pile', o.x + Math.cos(a) * d, o.y + Math.sin(a) * d, rnd() * 360); }
+      for (let k = 0; k < Math.floor(R * 4); k++) if (rnd() < R * 0.8) { const a = rnd() * Math.PI * 2, d = sz * (0.3 + rnd() * 1.1); tagNew(rnd() < 0.6 ? 'tree_bush' : rnd() < 0.5 ? 'tree_birch' : 'tree_aspen', o.x + Math.cos(a) * d, o.y + Math.sin(a) * d, rnd() * 360); }
+    }
+  }
+  // bushes on the streets
+  for (const rd of P.roads) {
+    if (rd[key] !== owner.id) continue;
+    let acc = 0;
+    for (let i = 0; i + 1 < rd.points.length; i++) {
+      const a = rd.points[i], b = rd.points[i + 1], L = Math.hypot(b[0] - a[0], b[1] - a[1]) * cm;
+      for (let t = (15 - acc % 15); t < L; t += 15) if (rnd() < R * 0.55) { const f = t / L; tagNew(rnd() < 0.7 ? 'tree_bush' : 'tree_birch', a[0] + (b[0] - a[0]) * f + (rnd() - 0.5) * 3 / cm, a[1] + (b[1] - a[1]) * f + (rnd() - 0.5) * 3 / cm, rnd() * 360); }
+      acc += L;
+    }
+    if (R > 0.6) rd.type = 'path';
+  }
+  P.objects = P.objects.filter((o) => !drop.has(o)).concat(add);
+}
+{
+  const _vgR = villageGenerate;
+  villageGenerate = function (P, v) { const r = _vgR(P, v); try { ruinize(P, v, 'village'); } catch (e) { console.warn(e); } return r; };
+  const _cgR = cityGenerate;
+  cityGenerate = function (P, city, keep) { const r = _cgR(P, city, keep); try { ruinize(P, city, 'city'); } catch (e) { console.warn(e); } return r; };
+  // the card: state + degree
+  const ruinBlock = (owner, rebuild) => {
+    const cur = owner.ruin || 0, k = RUIN_STATES.reduce((b, q) => (Math.abs(+q[0] - cur) < Math.abs(+b[0] - cur) ? q : b))[0];
+    return h('div', null,
+      field('Стан', seg(RUIN_STATES, cur ? k : '0', (v) => { Undo.push('all'); owner.ruin = +v; rebuild(); })),
+      cur ? slider('Ступінь руйнування', cur, 0.05, 1, 0.05, (v) => { owner.ruin = v; }, (v) => Math.round(v * 100) + '%', { onEnd: () => { Undo.push('all'); rebuild(); } }) : null);
+  };
+  const _vsR = villageSection;
+  villageSection = function (P, v) {
+    const out = _vsR(P, v);
+    try { out.append(section('Стан села', ruinBlock(v, () => { const pr = UI.progress('Перебудовую село…'); setTimeout(() => { try { villageGenerate(P, v); } catch (e) { console.error(e); } pr.close(); App.afterBigChange(true); UI.renderPanel(); }, 20); }), hint('Занедбане — частина хат порожня й розвалена; руїни — без дахів, з проваленими стінами, кущами й деревами у дворах. Закріплені будівлі не змінюються.'))); } catch (e) { console.warn(e); }
+    return out;
+  };
+  const _csR = citySection;
+  citySection = function (P, city) {
+    const out = _csR(P, city);
+    try { out.append(ruinBlock(city, () => { const pr = UI.progress('Перебудовую місто…'); setTimeout(() => { try { cityGenerate(P, city, true); } catch (e) { console.error(e); } pr.close(); App.afterBigChange(false); UI.renderPanel(); }, 20); })); } catch (e) { console.warn(e); }
+    return out;
+  };
+}
+// 3D: a ruined model loses its roof and breaks off at uneven heights, its colours turn grey and dark
+{
+  const ROOF = new Set([TX.thatch, TX.tiles, TX.slate]), rnz = makePerlin(4711);
+  const _ogR = Walk.objectGeo;
+  Walk.objectGeo = function (mb, o, e) {
+    const R = o.ruin || 0; if (!(R > 0)) return _ogR.call(this, mb, o, e);
+    const n0 = mb.n, i0 = mb.i.length, b = _ogR.call(this, mb, o, e), gy = b.y0 + 0.5, H = Math.max(1, b.y1 - gy), V = mb.v;
+    const cut = (x, z) => gy + Math.max(0.35, H * (1 - R * 0.85) * (0.5 + 0.5 * (rnz(x * 0.55, z * 0.55) + 0.5)) + (rnz(x * 2.3, z * 2.3)) * 0.4);
+    const keep = [];
+    for (let k = i0; k < mb.i.length; k += 3) {
+      const a = mb.i[k], bb = mb.i[k + 1], c = mb.i[k + 2], t = Math.round(V[a * 12 + 11]);
+      if (R > 0.45 && ROOF.has(t)) continue; // the roof has fallen in
+      const cx = (V[a * 12] + V[bb * 12] + V[c * 12]) / 3, cz = (V[a * 12 + 2] + V[bb * 12 + 2] + V[c * 12 + 2]) / 3, cy = Math.min(V[a * 12 + 1], V[bb * 12 + 1], V[c * 12 + 1]);
+      if (cy > cut(cx, cz) + 0.05) continue; // wholly above the break
+      keep.push(a, bb, c);
+    }
+    mb.i.length = i0; for (const q of keep) mb.i.push(q);
+    const dk = 1 - R * 0.35, gr = R * 0.45;
+    for (let k = n0; k < mb.n; k++) {
+      const o12 = k * 12, x = V[o12], z = V[o12 + 2], cy = cut(x, z);
+      if (V[o12 + 1] > cy) V[o12 + 1] = cy;
+      const r = V[o12 + 6], g = V[o12 + 7], bl = V[o12 + 8], l = (r + g + bl) / 3;
+      V[o12 + 6] = (r + (l - r) * gr) * dk; V[o12 + 7] = (g + (l - g) * gr) * dk * 1.02; V[o12 + 8] = (bl + (l - bl) * gr) * dk * 0.97;
+    }
+    let y1 = gy; for (let k = n0; k < mb.n; k++) y1 = Math.max(y1, V[k * 12 + 1]); b.y1 = y1;
+    return b;
+  };
+}
+
+// ---- fast terrain brushes: while a stroke goes on only the touched spot is redrawn;
+// rivers, lakes, trees and the full 3D refresh follow once, when the finger lifts ----
+const BrushFast = { on: 0, rect: null };
+{
+  const _dabF = App.dabAt;
+  App.dabAt = function (m) { const ts = this.toolState; if (!ts || ts.tool !== 'tbrush') return _dabF.call(this, m); BrushFast.on++; try { return _dabF.call(this, m); } finally { BrushFast.on--; } };
+  const _changedF = Terrain.changed;
+  Terrain.changed = function (x0, y0, x1, y1) {
+    if (!BrushFast.on || x1 == null) return _changedF.call(this, x0, y0, x1, y1);
+    const r = BrushFast.rect; BrushFast.rect = r ? { x0: Math.min(r.x0, x0), y0: Math.min(r.y0, y0), x1: Math.max(r.x1, x1), y1: Math.max(r.y1, y1) } : { x0, y0, x1, y1 };
+    this.composite(x0 - 1, y0 - 1, x1 + 1, y1 + 1); this.render(x0 - 2, y0 - 2, x1 + 2, y1 + 2);
+    if (Walk.open && Walk.terrainPatch && Walk.mode === 'world') Walk.terrainPatch(x0, y0, x1, y1);
+  };
+  const finish = () => { const r = BrushFast.rect; BrushFast.rect = null; if (r) Terrain.changed(r.x0, r.y0, r.x1, r.y1); };
+  const _endF = App.endTool; App.endTool = function (p) { if (this.toolState && this.toolState.tool === 'tbrush') finish(); return _endF.call(this, p); };
+  const _cancelF = App.cancelTool; App.cancelTool = function () { BrushFast.rect = null; return _cancelF.apply(this, arguments); };
+}
+
+// ---- smooth 2D panning: while the view moves, the last drawn picture is shifted/scaled (one copy),
+// and the full map is redrawn only every ~110 ms and once more when the view rests ----
+{
+  const PanBlit = { cv: null, ox: 0, oy: 0, k: 0, at: 0, timer: 0, bg: '', bgAt: 0 };
+  const _drawP = App.draw;
+  App.draw = function () {
+    const S = PanBlit, cv = this.canvas;
+    if (!this.P || !cv || AppSettings.get('panBlit') === false) return _drawP.call(this);
+    const moved = S.cv && (S.ox !== this.ox || S.oy !== this.oy || S.k !== this.k), now = performance.now();
+    if (moved && now - S.at < 110 && S.cv.width === cv.width && S.cv.height === cv.height) {
+      this.drawQueued = false;
+      const c = this.ctx, dpr = this.dpr, sc = this.k / S.k;
+      if (now - S.bgAt > 2000) { S.bg = getComputedStyle(document.documentElement).getPropertyValue('--sea-deep') || '#0d1a20'; S.bgAt = now; }
+      c.setTransform(1, 0, 0, 1, 0, 0); c.fillStyle = S.bg; c.fillRect(0, 0, cv.width, cv.height);
+      c.setTransform(sc, 0, 0, sc, dpr * (this.ox - S.ox * sc), dpr * (this.oy - S.oy * sc)); c.drawImage(S.cv, 0, 0);
+      c.setTransform(dpr, 0, 0, dpr, 0, 0); this.drawOverlay(c);
+      clearTimeout(S.timer); S.timer = setTimeout(() => { S.at = 0; this.requestDraw(); }, 110 - (now - S.at) + 5);
+      return;
+    }
+    // full draw; keep a copy of the world (before the overlay) for the next moves
+    const _ov = this.drawOverlay;
+    this.drawOverlay = function (c) {
+      try { if (!S.cv) S.cv = document.createElement('canvas'); if (S.cv.width !== cv.width || S.cv.height !== cv.height) { S.cv.width = cv.width; S.cv.height = cv.height; } const g = S.cv.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, cv.width, cv.height); g.drawImage(cv, 0, 0); S.ox = App.ox; S.oy = App.oy; S.k = App.k; S.at = performance.now(); } catch (e) { S.cv = null; }
+      return _ov.call(this, c);
+    };
+    try { return _drawP.call(this); } finally { this.drawOverlay = _ov; }
   };
 }
 
